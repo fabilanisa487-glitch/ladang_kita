@@ -120,25 +120,32 @@ async function runTests() {
     recordResult(2, 'Endpoint /api/auth/me check', false, e.message);
   }
 
-  // 3. Login salah 6 kali pada email yang sama menghasilkan 429 pada percobaan ke-6
+  // 3. Maksimal 3 permintaan login per IP dalam 60 detik
   try {
-    const wrongEmail = `wrong_${Date.now()}@example.com`;
-    let got429 = false;
-    for (let i = 1; i <= 6; i++) {
-      const resWrong = await fetch(`${BASE_URL}/api/auth/login`, {
+    const csrfResponse = await fetch(`${BASE_URL}/api/auth/csrf`);
+    const csrfBody = await csrfResponse.json().catch(() => ({}));
+    const csrfCookie = (csrfResponse.headers.get('set-cookie') || '').split(';')[0];
+    const statuses = [];
+    for (let i = 1; i <= 4; i++) {
+      const resLogin = await fetch(`${BASE_URL}/api/auth/login`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Origin: BASE_URL },
-        body: JSON.stringify({ email: wrongEmail, password: 'WrongPassword123' }),
+        headers: {
+          'Content-Type': 'application/json',
+          Origin: BASE_URL,
+          Cookie: csrfCookie,
+          'x-csrf-token': csrfBody.token,
+        },
+        body: JSON.stringify({}),
       });
-      if (i === 6 && resWrong.status === 429) {
-        got429 = true;
-      }
+      statuses.push(resLogin.status);
     }
+    const got429 = csrfResponse.ok && statuses[3] === 429 &&
+      statuses.slice(0, 3).every((status) => status === 400);
     recordResult(
       3,
-      'Login salah 6 kali pada email yang sama menghasilkan 429 pada percobaan ke-6',
+      'Tiga permintaan login per IP diterima untuk validasi; permintaan keempat ditolak',
       got429,
-      got429 ? 'Percobaan ke-6 ditolak dengan 429' : 'Belum menerima 429 pada percobaan ke-6'
+      `status=${statuses.join(',')}`
     );
   } catch (e) {
     recordResult(3, 'Login throttle check', false, e.message);

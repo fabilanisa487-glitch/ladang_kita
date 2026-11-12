@@ -79,8 +79,8 @@ export function AuthProvider({ children }) {
     return res;
   };
 
-  const login = async (email, password, remember = true, captcha) => {
-    const res = await apiLogin({ email, password, remember, captcha });
+  const login = async (email, password, remember = true, captcha, csrfToken) => {
+    const res = await apiLogin({ email, password, remember, captcha, csrfToken });
     if (res.success && res.user) {
       setUser(res.user);
     }

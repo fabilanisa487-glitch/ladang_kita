@@ -22,14 +22,17 @@ async function maybePurgeExpiredSessions() {
  * Membuat sesi baru dan menyimpan cookie HttpOnly
  * remember = true (30 hari), false (12 jam, tanpa maxAge di cookie)
  */
-export async function createSession(userId, remember = true) {
-  await maybePurgeExpiredSessions();
+export async function createSession(userId, remember = true, connection = null) {
+  if (!connection) {
+    await maybePurgeExpiredSessions();
+  }
 
   const token = crypto.randomBytes(32).toString('base64url');
   const tokenHash = sha256(token);
   const hours = remember ? 720 : 12; // 30 hari atau 12 jam
 
-  await execute(
+  const run = connection ? connection.execute.bind(connection) : execute;
+  await run(
     `INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, DATE_ADD(UTC_TIMESTAMP(), INTERVAL ${hours} HOUR), UTC_TIMESTAMP())`,
     [tokenHash, userId]
   );

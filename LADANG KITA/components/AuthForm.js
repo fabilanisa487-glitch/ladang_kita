@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowRight, LoaderCircle } from 'lucide-react';
 import { useAuth } from '@/data/data/context/AuthContext';
-import { apiCaptcha, safeNextPath } from '@/lib/authClient';
+import { apiCaptcha, apiLoginCsrf, safeNextPath } from '@/lib/authClient';
 import AuthCard from './AuthCard';
 import AuthPasswordInput from './AuthPasswordInput';
 
@@ -92,12 +92,32 @@ export default function AuthForm({ mode = 'login' }) {
     try {
       const result = isRegister
         ? await register(name, normalizedEmail, password, phone, securityQuestion, securityAnswer)
-        : await login(
-          normalizedEmail,
-          password,
-          remember,
-          captcha ? { id: captcha.id, answer: captchaAnswer } : undefined
-        );
+        : await (async () => {
+          let tokenResult = await apiLoginCsrf();
+          if (!tokenResult.success) {
+            return tokenResult;
+          }
+
+          let result = await login(
+            normalizedEmail,
+            password,
+            remember,
+            captcha ? { id: captcha.id, answer: captchaAnswer } : undefined,
+            tokenResult.token
+          );
+          if (!result.success && result.csrfRequired) {
+            tokenResult = await apiLoginCsrf();
+            if (!tokenResult.success) return tokenResult;
+            result = await login(
+              normalizedEmail,
+              password,
+              remember,
+              captcha ? { id: captcha.id, answer: captchaAnswer } : undefined,
+              tokenResult.token
+            );
+          }
+          return result;
+        })();
 
       if (!result.success) {
         setError(result.error || 'Tidak dapat memproses permintaan. Coba lagi.');

@@ -4,11 +4,11 @@
  * TIDAK menyimpan rahasia/token/user di localStorage.
  */
 
-async function postJson(url, data) {
+async function postJson(url, data, headers = {}) {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...headers },
       credentials: 'same-origin',
       body: JSON.stringify(data),
     });
@@ -44,13 +44,30 @@ export async function apiRegister({
   });
 }
 
-export async function apiLogin({ email, password, remember = true, captcha }) {
+export async function apiLogin({ email, password, remember = true, captcha, csrfToken }) {
   return postJson('/api/auth/login', {
     email,
     password,
     remember,
     ...(captcha ? { captchaId: captcha.id, captchaAnswer: captcha.answer } : {}),
-  });
+  }, csrfToken ? { 'x-csrf-token': csrfToken } : {});
+}
+
+export async function apiLoginCsrf() {
+  try {
+    const res = await fetch('/api/auth/csrf', {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || typeof json.token !== 'string') {
+      return { success: false, error: json.error || 'Tidak dapat memuat token keamanan.' };
+    }
+    return { success: true, token: json.token };
+  } catch {
+    return { success: false, error: 'Tidak dapat terhubung ke server. Periksa koneksi internet.' };
+  }
 }
 
 export async function apiCaptcha() {

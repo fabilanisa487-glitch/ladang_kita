@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { execute } from './db';
+import { withTransaction } from './db';
 
 /**
  * Mengembalikan respons JSON dengan header Cache-Control: no-store
@@ -166,27 +168,19 @@ export function hmac(code) {
 
 export async function loginLockState(bucket) {
   const [rows] = await execute(
-    `SELECT COUNT(*) AS n,
-            TIMESTAMPDIFF(SECOND, MAX(created_at), UTC_TIMESTAMP()) AS since
+    `SELECT COUNT(*) AS n
        FROM auth_attempts
       WHERE bucket = ? AND created_at > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1800 SECOND)`,
     [bucket]
   );
   const row = rows && rows[0] ? rows[0] : null;
   const n = Number(row && row.n ? row.n : 0);
-  const since = row && row.since !== null ? Number(row.since) : 0;
-  const lockSec = n >= 9 ? 900 : n >= 6 ? 300 : n >= 3 ? 60 : 0;
-  const remaining = Math.max(0, lockSec - since);
-
   return {
-    n,
-    locked: remaining > 0,
-    retryAfterSec: remaining,
     captchaRequired: n >= 3,
   };
 }
 
-export async function issueCaptcha() {
+export async function issueCaptcha(sessionToken) {
   const secret = process.env.OTP_SECRET;
   if (typeof secret !== 'string' || !secret.trim()) {
     const error = new Error('OTP_SECRET belum dikonfigurasi.');
@@ -197,68 +191,153 @@ export async function issueCaptcha() {
   const a = crypto.randomInt(1, 10);
   const b = crypto.randomInt(1, 10);
   const id = crypto.randomBytes(16).toString('hex');
+  if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sessionToken)) {
+    throw new Error('Sesi CAPTCHA tidak valid.');
+  }
   const answerHash = crypto.createHmac('sha256', secret).update(`${id}:${a + b}`).digest('hex');
 
   await execute(
-    `INSERT INTO captcha_challenges (id, answer_hash, used, expires_at, created_at)
-     VALUES (?, ?, 0, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 300 SECOND), UTC_TIMESTAMP())`,
-    [id, answerHash]
+    `INSERT INTO login_captcha_challenges (id, answer_hash, session_hash, used, expires_at, created_at)
+     VALUES (?, ?, ?, 0, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 300 SECOND), UTC_TIMESTAMP())`,
+    [id, answerHash, sha256(sessionToken)]
   );
 
   if (crypto.randomInt(1, 51) === 1) {
-    await execute('DELETE FROM captcha_challenges WHERE expires_at <= UTC_TIMESTAMP()');
+    await execute('DELETE FROM login_captcha_challenges WHERE expires_at <= UTC_TIMESTAMP()');
   }
 
   return { id, question: `Berapa ${a} + ${b}?` };
 }
 
-export async function verifyCaptcha(id, answer) {
+export async function verifyCaptcha(id, answer, sessionToken) {
   if (typeof id !== 'string' || !/^[a-f0-9]{32}$/.test(id)) return false;
   if (typeof answer !== 'string' || !/^[0-9]{1,3}$/.test(answer)) return false;
+  if (typeof sessionToken !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(sessionToken)) return false;
 
-  try {
-    const [rows] = await execute(
-      `SELECT answer_hash FROM captcha_challenges
-        WHERE id = ? AND used = 0 AND expires_at > UTC_TIMESTAMP()
-        LIMIT 1`,
-      [id]
-    );
-    if (!rows || rows.length === 0) return false;
+  const [rows] = await execute(
+    `SELECT answer_hash FROM login_captcha_challenges
+      WHERE id = ? AND session_hash = ? AND used = 0 AND expires_at > UTC_TIMESTAMP()
+      LIMIT 1`,
+    [id, sha256(sessionToken)]
+  );
+  if (!rows || rows.length === 0) return false;
 
-    const [result] = await execute(
-      'UPDATE captcha_challenges SET used = 1 WHERE id = ? AND used = 0 AND expires_at > UTC_TIMESTAMP()',
-      [id]
-    );
-    if (!result || result.affectedRows !== 1) return false;
+  const [result] = await execute(
+    `UPDATE login_captcha_challenges
+        SET used = 1
+      WHERE id = ? AND session_hash = ? AND used = 0 AND expires_at > UTC_TIMESTAMP()`,
+    [id, sha256(sessionToken)]
+  );
+  if (!result || result.affectedRows !== 1) return false;
 
-    const expected = rows[0].answer_hash;
-    const actual = crypto.createHmac('sha256', process.env.OTP_SECRET)
-      .update(`${id}:${answer}`)
-      .digest('hex');
-    const expectedBytes = Buffer.from(expected, 'hex');
-    const actualBytes = Buffer.from(actual, 'hex');
-    return expectedBytes.length === actualBytes.length &&
-      crypto.timingSafeEqual(expectedBytes, actualBytes);
-  } catch {
-    return false;
-  }
+  const expected = rows[0].answer_hash;
+  const actual = crypto.createHmac('sha256', process.env.OTP_SECRET)
+    .update(`${id}:${answer}`)
+    .digest('hex');
+  const expectedBytes = Buffer.from(expected, 'hex');
+  const actualBytes = Buffer.from(actual, 'hex');
+  return expectedBytes.length === actualBytes.length &&
+    crypto.timingSafeEqual(expectedBytes, actualBytes);
 }
 
 /**
- * Mengambil client IP yang tepercaya (x-nf-client-connection-ip, entri terakhir x-forwarded-for, atau local)
+ * Mengambil IP langsung dari runtime atau dari rantai proxy yang dikonfigurasi tepercaya.
  */
+export function getLoginIp(request) {
+  const directIp = typeof request.ip === 'string' ? request.ip.trim() : '';
+  if (net.isIP(directIp)) return directIp;
+
+  const trustedProxyHops = Number.parseInt(process.env.LOGIN_TRUSTED_PROXY_HOPS || '', 10);
+  if (Number.isInteger(trustedProxyHops) && trustedProxyHops > 0) {
+    const forwardedFor = request.headers.get('x-forwarded-for');
+    const chain = forwardedFor ? forwardedFor.split(',').map((part) => part.trim()) : [];
+    const clientIndex = chain.length - trustedProxyHops;
+    const clientIp = clientIndex >= 0 ? chain[clientIndex] : '';
+    if (net.isIP(clientIp)) return clientIp;
+  }
+
+  return 'unknown';
+}
+
+// Dipertahankan untuk route non-login yang masih memakai perilaku lama.
 export function getIp(request) {
   const nfIp = request.headers.get('x-nf-client-connection-ip');
   if (nfIp) return nfIp.trim();
 
-  const xForwardedFor = request.headers.get('x-forwarded-for');
-  if (xForwardedFor) {
-    const parts = xForwardedFor.split(',');
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (forwardedFor) {
+    const parts = forwardedFor.split(',');
     const last = parts[parts.length - 1].trim();
     if (last) return last;
   }
 
   return 'local';
+}
+
+export async function consumeLoginIpLimit(ip) {
+  const ipHash = sha256(ip);
+  const bucket = `login:ip:${ipHash}`;
+  if (Math.random() < 0.01) {
+    await execute(
+      'DELETE FROM login_ip_limits WHERE last_seen_at < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY)'
+    );
+  }
+
+  return withTransaction(async (connection) => {
+    await connection.execute(
+      'INSERT IGNORE INTO login_ip_limits (ip_hash, last_seen_at) VALUES (?, UTC_TIMESTAMP())',
+      [ipHash]
+    );
+    await connection.execute(
+      'UPDATE login_ip_limits SET last_seen_at = UTC_TIMESTAMP() WHERE ip_hash = ?',
+      [ipHash]
+    );
+    const [rows] = await connection.execute(
+      `SELECT COUNT(*) AS count
+         FROM auth_attempts
+        WHERE bucket = ? AND created_at >= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 60 SECOND)`,
+      [bucket]
+    );
+    if (Number(rows?.[0]?.count || 0) >= 3) return false;
+
+    await connection.execute(
+      'INSERT INTO auth_attempts (bucket, created_at) VALUES (?, UTC_TIMESTAMP())',
+      [bucket]
+    );
+    return true;
+  });
+}
+
+export function getRequestCookie(request, name) {
+  const cookieHeader = request.headers.get('cookie') || '';
+  for (const part of cookieHeader.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+export function loginCsrfCookieName() {
+  return process.env.NODE_ENV === 'production' ? '__Host-lk_login_csrf' : 'lk_login_csrf';
+}
+
+export function loginSessionCookieName() {
+  return process.env.NODE_ENV === 'production' ? '__Host-lk_login_session' : 'lk_login_session';
+}
+
+export function verifyLoginCsrf(request, token) {
+  if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return false;
+  const cookieToken = getRequestCookie(request, loginCsrfCookieName());
+  if (!/^[A-Za-z0-9_-]{43}$/.test(cookieToken)) return false;
+  const tokenBytes = Buffer.from(token);
+  const cookieBytes = Buffer.from(cookieToken);
+  return tokenBytes.length === cookieBytes.length &&
+    crypto.timingSafeEqual(tokenBytes, cookieBytes);
 }
 
 /**

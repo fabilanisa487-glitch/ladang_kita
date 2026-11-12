@@ -25,6 +25,30 @@ CREATE TABLE IF NOT EXISTS auth_attempts (
   INDEX idx_attempts (bucket, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+CREATE TABLE IF NOT EXISTS login_ip_limits (
+  ip_hash CHAR(64) PRIMARY KEY,
+  last_seen_at DATETIME NOT NULL,
+  INDEX idx_login_ip_seen (last_seen_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS login_account_lockouts (
+  user_id CHAR(36) PRIMARY KEY,
+  failed_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+  locked_until DATETIME NULL,
+  updated_at DATETIME NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS login_captcha_challenges (
+  id CHAR(32) PRIMARY KEY,
+  answer_hash CHAR(64) NOT NULL,
+  session_hash CHAR(64) NOT NULL,
+  used TINYINT(1) NOT NULL DEFAULT 0,
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME NOT NULL,
+  INDEX idx_login_captcha_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS password_resets (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   user_id CHAR(36) NOT NULL,

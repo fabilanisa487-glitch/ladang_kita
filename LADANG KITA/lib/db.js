@@ -39,3 +39,18 @@ export async function query(sql, params = []) {
   const pool = getPool();
   return pool.query(sql, params);
 }
+
+export async function withTransaction(callback) {
+  const connection = await getPool().getConnection();
+  try {
+    await connection.beginTransaction();
+    const result = await callback(connection);
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}

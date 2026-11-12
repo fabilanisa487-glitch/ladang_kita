@@ -5,12 +5,15 @@ Tanggal perubahan: 13 Oktober 2026
 ## Mitigasi yang sekarang diterapkan
 
 1. **Security headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, dan CSP `Report-Only`. CSP belum dipaksa sampai diuji di browser. HSTS tidak diaktifkan untuk demo HTTP lokal.
-2. **Autentikasi server-side** — daftar/masuk melalui API Next.js; password di-hash dengan Node `scrypt` dan salt acak di server. Database menyimpan hash, bukan password asli. Login membatasi percobaan gagal per email selama jendela 15 menit.
+2. **Autentikasi server-side** — daftar/masuk melalui API Next.js; password disimpan dan diverifikasi dengan bcrypt. Database menyimpan hash, bukan password asli. Login membatasi permintaan menjadi 3 per 60 detik per IP, serta mengunci akun selama 17 menit setelah 3 password salah. Penghitung lockout tersimpan di MySQL dan diperbarui dalam transaksi.
 3. **Sesi server-side** — token acak berada dalam cookie `HttpOnly`, `SameSite=Lax`; database hanya menyimpan SHA-256 token sesi. Cookie memakai `Secure` saat `NODE_ENV=production`. Logout menghapus sesi server dan cookie.
 4. **Database lokal** — tabel SQLite dibuat otomatis di `data/runtime/ladang-kita.sqlite` saat API digunakan. Memerlukan Node.js 22.5+ (disarankan Node 22 LTS terbaru) karena memakai `node:sqlite`. File database lokal dikecualikan dari Git.
 5. **OTP pemulihan** — kode dibuat di server, hash kode disimpan di SQLite, masa berlaku 5 menit, maksimal 5 percobaan, dan pembatasan kirim ulang 60 detik. Tanpa penyedia email/SMS, kode hanya dicatat di terminal server. Untuk demo lokal, `LADANG_DEMO_SHOW_OTP=true` mengizinkan kode muncul di UI; jangan aktifkan di production. Ini belum membuktikan kepemilikan email/nomor HP lewat kanal nyata.
 6. **Checkout sisi server** — API menerima hanya ID produk dan jumlah. Harga/nama diambil ulang dari katalog server; jumlah, stok, alamat, dan metode pembayaran divalidasi. Pesanan dan item disimpan ke SQLite dalam transaksi database. Statusnya tetap `DEMO_CREATED`, bukan pembayaran/pengiriman nyata.
 7. **Validasi UI & repository** — batas panjang input, penanganan JSON keranjang rusak, batas quantity sisi UI, `noopener noreferrer` untuk tautan eksternal, `.gitignore`, dan `.env.example`.
+8. **Perlindungan login** — token CSRF diverifikasi server dengan cookie `HttpOnly`; CAPTCHA disimpan di MySQL, sekali pakai, dan diikat ke cookie sesi sementara. Jika aplikasi berada di belakang reverse proxy, atur `LOGIN_TRUSTED_PROXY_HOPS` hanya jika proxy tepercaya menambahkan alamat klien ke `X-Forwarded-For`. Tanpa nilai tersebut, header IP yang dikirim pengguna tidak dipercaya dan seluruh request tanpa IP runtime berbagi bucket `unknown`.
+
+Jalankan `npm run db:setup` setelah pembaruan agar tabel rate limit, lockout, dan CAPTCHA login dibuat. Perintah ini memakai `CREATE TABLE IF NOT EXISTS` dan tidak menghapus tabel atau akun pengguna yang ada.
 
 ## Cara menjalankan demo lokal
 
