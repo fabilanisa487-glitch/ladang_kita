@@ -1,0 +1,23 @@
+# Dependencies and build output
+node_modules/
+.next/
+out/
+coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local/debug artifacts
+.DS_Store
+*.log
+*.bak
+*.old
+
+# Local demo database
+/data/runtime/*.sqlite
+/data/runtime/*.sqlite-shm
+/data/runtime/*.sqlite-wal
